@@ -103,7 +103,7 @@ type IFD struct {
 	GeoKeyDirectoryTag     []uint16  `tiff:"field,tag=34735"`
 	GeoDoubleParamsTag     []float64 `tiff:"field,tag=34736"`
 	GeoAsciiParamsTag      string    `tiff:"field,tag=34737"`
-	GDALMetaData           string    `tiff:"field,tag=42112`
+	GDALMetaData           string    `tiff:"field,tag=42112"`
 	LERCParams             []uint32  `tiff:"field,tag=50674"`
 	RPCs                   []float64 `tiff:"field,tag=50844"`
 
