@@ -863,14 +863,16 @@ type tile struct {
 }
 
 func (cog *MultiCOG) dataInterlacing() datas {
-	ret := make([][]*IFD, 1)
+	ret := [][]*IFD{}
+	full := []*IFD{}
+
 	for _, topifd := range cog.ifds {
-		ret[0] = append(ret[0], topifd)
+		full = append(full, topifd)
 		ovr := []*IFD{}
 		for _, subifd := range topifd.SubIFDs {
 			if subifd.SubfileType == SubfileTypeMask &&
 				subifd.ImageWidth == topifd.ImageWidth {
-				ret[0] = append(ret[0], subifd)
+				full = append(full, subifd)
 			} else {
 				ovr = append(ovr, subifd)
 			}
@@ -885,6 +887,7 @@ func (cog *MultiCOG) dataInterlacing() datas {
 			ret = append(ret, ovr)
 		}
 	}
+	ret = append(ret, full)
 	return ret
 }
 
