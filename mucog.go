@@ -895,7 +895,7 @@ func (d datas) Tiles() chan tile {
 	go func() {
 		defer close(ch)
 
-		ifds := d[0]
+		ifds := d[len(d)-1]
 		for plane := uint64(0); plane < ifds[0].nplanes; plane++ {
 			y := uint64(0)
 			for {
@@ -936,7 +936,7 @@ func (d datas) Tiles() chan tile {
 				y++
 			}
 		}
-		for i := 1; i < len(d); i++ {
+		for i := 0; i < len(d)-1; i++ {
 			ifds = d[i]
 			for _, ifd := range ifds {
 				for y := uint64(0); y < ifd.ntilesy; y++ {
