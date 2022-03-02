@@ -501,6 +501,9 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool) error {
 }
 
 func (cog *MultiCOG) Write(out io.Writer, bigtiff bool) error {
+	if len(cog.ifds) == 0 {
+		return fmt.Errorf("empty ifds")
+	}
 	for _, mifd := range cog.ifds {
 		if len(mifd.SubIFDOffsets) != len(mifd.SubIFDs) {
 			mifd.SubIFDOffsets = make([]uint64, len(mifd.SubIFDs))
