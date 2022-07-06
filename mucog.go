@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/airbusgeo/mucog/iterator"
 	"github.com/google/tiff"
 	_ "github.com/google/tiff/bigtiff"
 )
@@ -15,6 +16,7 @@ import (
 type SubfileType uint32
 
 const (
+	SubfileTypeImage        = 0
 	SubfileTypeReducedImage = 1
 	SubfileTypePage         = 2
 	SubfileTypeMask         = 4
@@ -109,7 +111,8 @@ type IFD struct {
 
 	NoData string `tiff:"field,tag=42113"`
 
-	SubIFDs []*IFD
+	SubIFDs   []*IFD
+	ZoomLevel uint64
 
 	ntags                  uint64
 	tagsSize               uint64
@@ -297,6 +300,12 @@ func (ifd *IFD) structure(bigtiff bool) (tagCount, ifdSize, strileSize, planeCou
 	return
 }
 
+func (i *IFD) getZoomLevel(ovrResX, ovrResY uint64) uint64 {
+	xFactor := i.ImageWidth / ovrResX
+	yFactor := i.ImageLength / ovrResY
+	return uint64(math.Log2(math.Max(float64(xFactor), float64(yFactor))))
+}
+
 type TagData struct {
 	bytes.Buffer
 	Offset uint64
@@ -307,8 +316,9 @@ func (t *TagData) NextOffset() uint64 {
 }
 
 type MultiCOG struct {
-	enc  binary.ByteOrder
-	ifds []*IFD
+	enc       binary.ByteOrder
+	ifds      []*IFD
+	iterators []*iterator.Iterators
 }
 
 func New() *MultiCOG {
@@ -432,12 +442,53 @@ func (cog *MultiCOG) computeStructure(bigtiff bool) error {
 	return nil
 }
 
+func (cog *MultiCOG) computeIterator(pattern string) error {
+	var nbBands int
+	zMinMaxBlock := [][4]int32{{math.MaxInt32, 0, math.MaxInt32}}
+	for _, ifd := range cog.ifds {
+		if ifd.SubfileType == SubfileTypeImage {
+			nbBands = int(math.Max(float64(ifd.nplanes), float64(nbBands)))
+			currentFr := zMinMaxBlock[ifd.ZoomLevel]
+			zMinMaxBlock[0] = [4]int32{
+				int32(math.Min(float64(currentFr[0]), float64(ifd.minx))),
+				int32(math.Max(float64(currentFr[1]), float64(ifd.maxx))),
+				int32(math.Min(float64(currentFr[2]), float64(ifd.miny))),
+				int32(math.Max(float64(currentFr[3]), float64(ifd.maxy))),
+			}
+		}
+		for _, subIfd := range ifd.SubIFDs {
+			subIfd.ZoomLevel = ifd.getZoomLevel(subIfd.ImageWidth, subIfd.ImageLength)
+			if subIfd.SubfileType == SubfileTypeReducedImage {
+				// Resize zMinMaxBlock
+				for i := uint64(len(zMinMaxBlock)); i <= subIfd.ZoomLevel; i++ {
+					zMinMaxBlock = append(zMinMaxBlock, [4]int32{math.MaxInt32, 0, math.MaxInt32})
+				}
+				currentOvr := zMinMaxBlock[subIfd.ZoomLevel]
+				zMinMaxBlock[subIfd.ZoomLevel] = [4]int32{
+					int32(math.Min(float64(currentOvr[0]), float64(subIfd.minx))),
+					int32(math.Max(float64(currentOvr[1]), float64(subIfd.maxx))),
+					int32(math.Min(float64(currentOvr[2]), float64(subIfd.miny))),
+					int32(math.Max(float64(currentOvr[3]), float64(subIfd.maxy))),
+				}
+			}
+		}
+	}
+
+	var err error
+	cog.iterators, err = iterator.InitIterators(pattern, len(cog.ifds), nbBands, zMinMaxBlock)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (cog *MultiCOG) AppendIFD(ifd *IFD) {
 	cog.ifds = append(cog.ifds, ifd)
 
 }
 
-func (cog *MultiCOG) computeImageryOffsets(bigtiff bool) error {
+func (cog *MultiCOG) computeImageryOffsets(bigtiff bool, pattern string) error {
 
 	for _, mifd := range cog.ifds {
 		if bigtiff {
@@ -460,6 +511,10 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool) error {
 		return err
 	}
 
+	if err = cog.computeIterator(pattern); err != nil {
+		return err
+	}
+
 	//offset to start of image data
 	dataOffset := uint64(16)
 	if !bigtiff {
@@ -474,7 +529,7 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool) error {
 	}
 
 	datas := cog.dataInterlacing()
-	tiles := datas.Tiles()
+	tiles := datas.Tiles(cog.iterators)
 	for tile := range tiles {
 		tileidx := (tile.x+tile.y*tile.ifd.ntilesx)*tile.ifd.nplanes + tile.plane
 		cnt := uint64(tile.ifd.TileByteCounts[tileidx])
@@ -500,14 +555,14 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool) error {
 	return nil
 }
 
-func (cog *MultiCOG) Write(out io.Writer, bigtiff bool) error {
+func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 	for _, mifd := range cog.ifds {
 		if len(mifd.SubIFDOffsets) != len(mifd.SubIFDs) {
 			mifd.SubIFDOffsets = make([]uint64, len(mifd.SubIFDs))
 		}
 	}
 
-	err := cog.computeImageryOffsets(bigtiff)
+	err := cog.computeImageryOffsets(bigtiff, pattern)
 	if err != nil {
 		return err
 	}
@@ -563,7 +618,7 @@ func (cog *MultiCOG) Write(out io.Writer, bigtiff bool) error {
 	_, err = out.Write(strileData.Bytes())
 
 	datas := cog.dataInterlacing()
-	tiles := datas.Tiles()
+	tiles := datas.Tiles(cog.iterators)
 	buf := &bytes.Buffer{}
 	for tile := range tiles {
 		buf.Reset()
@@ -863,95 +918,57 @@ type tile struct {
 }
 
 func (cog *MultiCOG) dataInterlacing() datas {
-	ret := [][]*IFD{}
-	full := []*IFD{}
-
+	var result datas
 	for _, topifd := range cog.ifds {
-		full = append(full, topifd)
-		ovr := []*IFD{}
+		data := [][]*IFD{{topifd}}
 		for _, subifd := range topifd.SubIFDs {
-			if subifd.SubfileType == SubfileTypeMask &&
-				subifd.ImageWidth == topifd.ImageWidth {
-				full = append(full, subifd)
-			} else {
-				ovr = append(ovr, subifd)
+			z := subifd.ZoomLevel
+			for i := uint64(len(data)); i <= z; i++ {
+				data = append(data, []*IFD{})
 			}
+			data[z] = append(data[z], subifd)
 		}
-		if len(ovr) > 0 {
-			sort.Slice(ovr, func(i, j int) bool {
-				if ovr[i].ImageWidth == ovr[j].ImageWidth {
-					return ovr[i].SubfileType < ovr[j].SubfileType
-				}
-				return ovr[i].ImageWidth < ovr[j].ImageWidth
+		// Sort each zoom level
+		for i := range data {
+			sort.Slice(data[i], func(k, l int) bool {
+				return data[i][k].SubfileType < data[i][l].SubfileType
 			})
-			ret = append(ret, ovr)
 		}
+		result = append(result, data)
 	}
-	ret = append(ret, full)
-	return ret
+
+	return result
 }
 
-type datas [][]*IFD
+type datas [][][]*IFD
 
-func (d datas) Tiles() chan tile {
+func (d datas) Tiles(iterators []*iterator.Iterators) chan tile {
 	ch := make(chan tile)
 	go func() {
 		defer close(ch)
-
-		ifds := d[len(d)-1]
-		for plane := uint64(0); plane < ifds[0].nplanes; plane++ {
-			y := uint64(0)
-			for {
-				yok := false
-				for _, ifd := range ifds {
-					if y < ifd.maxy {
-						yok = true
-						break
-					}
-				}
-				if !yok {
-					break
-				}
-				x := uint64(0)
-				for {
-					xok := false
-					for _, ifd := range ifds {
-						if x < ifd.maxx {
-							xok = true
-							break
-						}
-					}
-					if !xok {
-						break
-					}
-					for _, ifd := range ifds {
-						if x >= ifd.minx && x < ifd.maxx && y >= ifd.miny && y < ifd.maxy {
-							ch <- tile{
-								ifd:   ifd,
-								plane: plane,
-								x:     x - ifd.minx,
-								y:     y - ifd.miny,
+		for _, it := range iterators {
+			indices := []*int{nil, nil, nil, nil}
+			for it[0].Init(indices); it[0].Next(); {
+				for it[1].Init(indices); it[1].Next(); {
+					for it[2].Init(indices); it[2].Next(); {
+						for it[3].Init(indices); it[3].Next(); {
+							x, y := iterator.DecodePair(*indices[iterator.IDX_TILE])
+							p := uint64(*indices[iterator.IDX_BAND])
+							for _, ifd := range d[*indices[iterator.IDX_RECORD]][*indices[iterator.IDX_ZOOM]] {
+								if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
+									ch <- tile{
+										ifd:   ifd,
+										x:     uint64(x),
+										y:     uint64(y),
+										plane: p,
+									}
+								}
 							}
 						}
 					}
-					x++
-				}
-				y++
-			}
-		}
-		for i := 0; i < len(d)-1; i++ {
-			ifds = d[i]
-			for _, ifd := range ifds {
-				for y := uint64(0); y < ifd.ntilesy; y++ {
-					for x := uint64(0); x < ifd.ntilesx; x++ {
-						for p := uint64(0); p < ifd.nplanes; p++ {
-							ch <- tile{ifd: ifd, x: x, y: y, plane: p}
-						}
-					}
 				}
 			}
 		}
-
 	}()
 	return ch
 }
