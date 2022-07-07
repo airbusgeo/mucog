@@ -23,7 +23,8 @@ var Names = []string{"Record", "Zoom", "Tile", "Band"}
 // Iterator on integers with an Identifier
 // Usage:
 // var it Iterator
-// for id, pval := it.ID(), it.Init(); it.Next(); {
+// var indices = []*int
+// for it.Init(indices); it.Next(); {
 //   fmt.Printf("It[%d] = %d", it.ID(), *pval)
 // }
 type Iterator interface {

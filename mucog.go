@@ -451,21 +451,16 @@ func (cog *MultiCOG) computeIterator(pattern string) error {
 		}
 
 		ifd.ZoomLevel = ifd.getZoomLevel(ifd.ImageWidth, ifd.ImageLength)
-		if ifd.ZoomLevel < uint64(len(zMinMaxBlock)) {
-			currentFr := zMinMaxBlock[ifd.ZoomLevel]
-			zMinMaxBlock[ifd.ZoomLevel] = [4]int32{
-				int32(math.Max(float64(currentFr[0]), float64(ifd.minx))),
-				int32(math.Max(float64(currentFr[1]), float64(ifd.maxx))),
-				int32(math.Max(float64(currentFr[2]), float64(ifd.miny))),
-				int32(math.Max(float64(currentFr[3]), float64(ifd.maxy))),
-			}
-		} else {
-			zMinMaxBlock = append(zMinMaxBlock, [4]int32{
-				int32(ifd.minx),
-				int32(ifd.maxx),
-				int32(ifd.miny),
-				int32(ifd.maxy),
-			})
+		// Resize zMinMaxBlock
+		for i := uint64(len(zMinMaxBlock)); i <= ifd.ZoomLevel; i++ {
+			zMinMaxBlock = append(zMinMaxBlock, [4]int32{math.MaxInt32, 0, math.MaxInt32})
+		}
+		currentFr := zMinMaxBlock[ifd.ZoomLevel]
+		zMinMaxBlock[ifd.ZoomLevel] = [4]int32{
+			int32(math.Min(float64(currentFr[0]), float64(ifd.minx))),
+			int32(math.Max(float64(currentFr[1]), float64(ifd.maxx))),
+			int32(math.Min(float64(currentFr[2]), float64(ifd.miny))),
+			int32(math.Max(float64(currentFr[3]), float64(ifd.maxy))),
 		}
 
 		currentNbOverview := 0
@@ -940,26 +935,21 @@ type tile struct {
 }
 
 func (cog *MultiCOG) dataInterlacing() datas {
-	var result [][]*IFD
+	var result datas
 	for _, topifd := range cog.ifds {
-		data := []*IFD{topifd}
-		var ovr []*IFD
+		data := [][]*IFD{{topifd}}
 		for _, subifd := range topifd.SubIFDs {
-			if subifd.SubfileType == SubfileTypeMask &&
-				subifd.ImageWidth == topifd.ImageWidth {
-				data = append(data, subifd)
-			} else {
-				ovr = append(ovr, subifd)
+			z := subifd.ZoomLevel
+			for i := uint64(len(data)); i <= z; i++ {
+				data = append(data, []*IFD{})
 			}
+			data[z] = append(data[z], subifd)
 		}
-		if len(ovr) > 0 {
-			sort.Slice(ovr, func(i, j int) bool {
-				if ovr[i].ZoomLevel == ovr[j].ZoomLevel {
-					return ovr[i].SubfileType < ovr[j].SubfileType
-				}
-				return ovr[i].ZoomLevel < ovr[j].ZoomLevel
+		// Sort each zoom level
+		for i := range data {
+			sort.Slice(data[i], func(i, j int) bool {
+				return data[i][j].SubfileType < data[i][j].SubfileType
 			})
-			data = append(data, ovr...)
 		}
 		result = append(result, data)
 	}
@@ -967,7 +957,7 @@ func (cog *MultiCOG) dataInterlacing() datas {
 	return result
 }
 
-type datas [][]*IFD
+type datas [][][]*IFD
 
 func (d datas) Tiles(iterators []*iterator.Iterators) chan tile {
 	ch := make(chan tile)
@@ -981,13 +971,14 @@ func (d datas) Tiles(iterators []*iterator.Iterators) chan tile {
 						for it[3].Init(indices); it[3].Next(); {
 							x, y := iterator.DecodePair(*indices[iterator.IDX_TILE])
 							p := uint64(*indices[iterator.IDX_BAND])
-							ifd := d[*indices[iterator.IDX_RECORD]][*indices[iterator.IDX_ZOOM]]
-							if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
-								ch <- tile{
-									ifd:   ifd,
-									x:     uint64(x),
-									y:     uint64(y),
-									plane: p,
+							for _, ifd := range d[*indices[iterator.IDX_RECORD]][*indices[iterator.IDX_ZOOM]] {
+								if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
+									ch <- tile{
+										ifd:   ifd,
+										x:     uint64(x),
+										y:     uint64(y),
+										plane: p,
+									}
 								}
 							}
 						}
