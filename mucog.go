@@ -555,6 +555,33 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool, pattern string) error {
 	return nil
 }
 
+/** Write multiCOG to a mucog
+ * Parameters "pattern" defines how to interlace the [R]ecords (dataset), the [B]ands (planes), the [Z]ooms level (overview) and the [T]iles (geotiff blocks).
+ * The four levels of interlacing must be prioritized in the following way L1>L2>L3>L4 where each L is in [R, B, Z, T]. This order should be understood as:
+ * for each L1:
+ *   for each L2:
+ *     for each L3:
+ *       for each L4:
+ *         addBlock(L1, L2, L3, L4)
+ * In other words, all L4 for a given (L1, L2, L3) will be contiguous in memory.
+ * For example:
+ * - To optimize the access to geographical information of all the bands (such as in COG) : R>Z>T>B  => For a given record, zoom level and block, all the bands will be contiguous.
+ * - To optimize the access to geographical information of one band at a time : B>R>Z>T => For a given band, record and zoom, all the blocks will be contiguous.
+ * - To optimize the access to timeseries of all the bands (such as in MUCOG): Z>T>R>B => For a given zoom level and block, all the records will be contiguous.
+ *
+ * Interlacing pattern can be specialized to only select a list or a range for each level (except Tile level).
+ * - By values: L=0,2,3 will only select the value 0, 2 and 3 of the level L. For example B=0,2,3 to select the corresponding band level.
+ * - By range: L=0:3 will only select the values from 0 to 3 (not included) of the level L. For example B=0:3 to select the three firsts bands.
+ * First and last values of the range can be omitted to define 0 or last element of the level. e.g B=2: means all the bands from the second.
+ * Z=0 is the full resolution, Z=1 is the overview with zoom factor 2, Z=2 is the zoom factor 4, and so on.
+ *
+ * To chain interlacing patterns, use ";" separator.
+ *
+ * For example:
+ * - Optimize access to timeseries for full resolution (Z=0), but geographic for overviews (Z=1:). Z=0>T>R>B;Z=1:>R>T>B
+ * - Same example, but the bands are separated: B>Z=0>T>R;B>Z=1:>R>T
+ * - To optimize access to geographic information of the three first bands together, but timeseries of the others: Z>T>R>B=0:3;B=3:>Z>R>T
+ */
 func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 	for _, mifd := range cog.ifds {
 		if len(mifd.SubIFDOffsets) != len(mifd.SubIFDs) {
