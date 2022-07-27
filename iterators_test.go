@@ -1,9 +1,11 @@
-package iterator_test
+package mucog_test
 
 import (
-	. "github.com/airbusgeo/mucog/iterator"
+	"fmt"
 	"strings"
 	"testing"
+
+	. "github.com/airbusgeo/mucog"
 )
 
 func testEncodeDecode(x, y int32) bool {
@@ -84,7 +86,7 @@ func TestTilesIterator(t *testing.T) {
 					i := int32(0)
 					indices := []*int{nil, nil, nil, nil}
 					z := 0
-					indices[IDX_ZOOM] = &z
+					indices[IDX_LEVEL] = &z
 					for it.Init(indices); it.Next(); i++ {
 						x, y := DecodePair(*indices[IDX_TILE])
 						if x < minMax[0] || x >= minMax[1] || y < minMax[2] || y >= minMax[3] {
@@ -101,50 +103,50 @@ func TestTilesIterator(t *testing.T) {
 }
 
 func TestIterators(t *testing.T) {
-	if _, err := NewIteratorsFromString("R>B>T", 0, 0, nil); err == nil || !strings.Contains(err.Error(), "must have four level of iterations") {
+	if _, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s", KEY_IMAGE, KEY_PLANE, KEY_TILE), 0, 0, nil); err == nil || !strings.Contains(err.Error(), "must have four level of iterations") {
 		t.Errorf("TestLevelOfIterator: %v", err)
 	}
-	if _, err := NewIteratorsFromString("R>B>T>K", 0, 0, nil); err == nil || !strings.Contains(err.Error(), "unknown key") {
+	if _, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE, KEY_TILE, "?"), 0, 0, nil); err == nil || !strings.Contains(err.Error(), "unknown key") {
 		t.Errorf("TestUnknownKey: %v", err)
 	}
-	if _, err := NewIteratorsFromString("R>B>R>Z", 0, 0, nil); err == nil || !strings.Contains(err.Error(), "defined twice") {
+	if _, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE, KEY_IMAGE, KEY_TILE), 0, 0, nil); err == nil || !strings.Contains(err.Error(), "defined twice") {
 		t.Errorf("TestDefinedTwice: %v", err)
 	}
-	if _, err := NewIteratorsFromString("R>B>T>Z", 0, 0, nil); err == nil || !strings.Contains(err.Error(), "cannot be defined before") {
-		t.Errorf("TestZoomDefinedBeforeTile: %v", err)
+	if _, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE, KEY_TILE, KEY_LEVEL), 0, 0, nil); err == nil || !strings.Contains(err.Error(), "cannot be defined before") {
+		t.Errorf("TestLevelDefinedBeforeTile: %v", err)
 	}
-	if _, err := NewIteratorsFromString("R>B>Z>T", 0, 0, nil); err != nil {
+	if _, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE, KEY_LEVEL, KEY_TILE), 0, 0, nil); err != nil {
 		t.Error(err)
 	}
-	if its, err := NewIteratorsFromString("R>B=2>Z>T", 0, 0, nil); err != nil {
+	if its, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE+"=2", KEY_LEVEL, KEY_TILE), 0, 0, nil); err != nil {
 		t.Error(err)
 	} else if it, ok := its[1].(*ValuesIterator); !ok {
 		t.Error("Not ValuesIterator")
 	} else if len(it.Values) != 0 {
 		t.Errorf("wrong values: %v", it.Values)
 	}
-	if its, err := NewIteratorsFromString("R>B=2>Z>T", 10, 10, nil); err != nil {
+	if its, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE+"=2", KEY_LEVEL, KEY_TILE), 10, 10, nil); err != nil {
 		t.Error(err)
 	} else if it, ok := its[1].(*ValuesIterator); !ok {
 		t.Error("Not ValuesIterator")
 	} else if len(it.Values) != 1 || it.Values[0] != 2 {
 		t.Errorf("wrong values: %v", it.Values)
 	}
-	if its, err := NewIteratorsFromString("R>B=2:>Z>T", 10, 10, nil); err != nil {
+	if its, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE+"=2:", KEY_LEVEL, KEY_TILE), 10, 10, nil); err != nil {
 		t.Error(err)
 	} else if it, ok := its[1].(*RangeIterator); !ok {
 		t.Error("Not RangeIterator")
 	} else if it.Start != 2 || it.End != 10 {
 		t.Errorf("wrong values: %d, %d", it.Start, it.End)
 	}
-	if its, err := NewIteratorsFromString("R>B=:2>Z>T", 10, 10, nil); err != nil {
+	if its, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE+"=:2", KEY_LEVEL, KEY_TILE), 10, 10, nil); err != nil {
 		t.Error(err)
 	} else if it, ok := its[1].(*RangeIterator); !ok {
 		t.Error("Not RangeIterator")
 	} else if it.Start != 0 || it.End != 2 {
 		t.Errorf("wrong values: %d, %d", it.Start, it.End)
 	}
-	if its, err := NewIteratorsFromString("R>B=3:11>Z>T", 10, 10, nil); err != nil {
+	if its, err := NewIteratorsFromString(fmt.Sprintf("%s>%s>%s>%s", KEY_IMAGE, KEY_PLANE+"=3:11", KEY_LEVEL, KEY_TILE), 10, 10, nil); err != nil {
 		t.Error(err)
 	} else if it, ok := its[1].(*RangeIterator); !ok {
 		t.Error("Not RangeIterator")

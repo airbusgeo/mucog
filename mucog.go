@@ -8,7 +8,6 @@ import (
 	"math"
 	"sort"
 
-	"github.com/airbusgeo/mucog/iterator"
 	"github.com/google/tiff"
 	_ "github.com/google/tiff/bigtiff"
 )
@@ -73,6 +72,11 @@ const (
 	PhotometricInterpretationLOGLUV     = 32845
 )
 
+const (
+	MUCOGPattern         = "L=0>T>I>P;L=1:>I>T>P" // Full resolution is temporally interlaced, overviews are geographically interlaced
+	MUCOGTemporalPattern = "L>T>I>P"              // All levels are temporally interlaced
+)
+
 type IFD struct {
 	//Any field added here should also be accounted for in WriteIFD and ifd.Fieldcount
 	SubfileType               uint32   `tiff:"field,tag=254"`
@@ -111,8 +115,8 @@ type IFD struct {
 
 	NoData string `tiff:"field,tag=42113"`
 
-	SubIFDs   []*IFD
-	ZoomLevel uint64
+	SubIFDs    []*IFD
+	ZoomFactor float64
 
 	ntags                  uint64
 	tagsSize               uint64
@@ -300,10 +304,10 @@ func (ifd *IFD) structure(bigtiff bool) (tagCount, ifdSize, strileSize, planeCou
 	return
 }
 
-func (i *IFD) getZoomLevel(ovrResX, ovrResY uint64) uint64 {
+func (i *IFD) getZoomFactor(ovrResX, ovrResY uint64) float64 {
 	xFactor := i.ImageWidth / ovrResX
 	yFactor := i.ImageLength / ovrResY
-	return uint64(math.Log2(math.Max(float64(xFactor), float64(yFactor))))
+	return math.Max(float64(xFactor), float64(yFactor))
 }
 
 type TagData struct {
@@ -316,9 +320,10 @@ func (t *TagData) NextOffset() uint64 {
 }
 
 type MultiCOG struct {
-	enc       binary.ByteOrder
-	ifds      []*IFD
-	iterators []*iterator.Iterators
+	enc               binary.ByteOrder
+	ifds              []*IFD
+	iterators         []*Iterators
+	zoomFactorToLevel map[float64]int
 }
 
 func New() *MultiCOG {
@@ -443,39 +448,58 @@ func (cog *MultiCOG) computeStructure(bigtiff bool) error {
 }
 
 func (cog *MultiCOG) computeIterator(pattern string) error {
-	var nbBands int
-	zMinMaxBlock := [][4]int32{{math.MaxInt32, 0, math.MaxInt32}}
+	type MinMaxBlock struct {
+		Factor float64
+		MinMax [4]int32
+	}
+
+	var nbPlanes int
+	zoomLevel := []MinMaxBlock{{0, [4]int32{math.MaxInt32, 0, math.MaxInt32}}}
+	zFactorToLevel := map[float64]int{}
 	for _, ifd := range cog.ifds {
 		if ifd.SubfileType == SubfileTypeImage {
-			nbBands = int(math.Max(float64(ifd.nplanes), float64(nbBands)))
-			currentFr := zMinMaxBlock[ifd.ZoomLevel]
-			zMinMaxBlock[0] = [4]int32{
-				int32(math.Min(float64(currentFr[0]), float64(ifd.minx))),
-				int32(math.Max(float64(currentFr[1]), float64(ifd.maxx))),
-				int32(math.Min(float64(currentFr[2]), float64(ifd.miny))),
-				int32(math.Max(float64(currentFr[3]), float64(ifd.maxy))),
+			nbPlanes = int(math.Max(float64(ifd.nplanes), float64(nbPlanes)))
+			currentMM := zoomLevel[0].MinMax
+			zoomLevel[0].MinMax = [4]int32{
+				int32(math.Min(float64(currentMM[0]), float64(ifd.minx))),
+				int32(math.Max(float64(currentMM[1]), float64(ifd.maxx))),
+				int32(math.Min(float64(currentMM[2]), float64(ifd.miny))),
+				int32(math.Max(float64(currentMM[3]), float64(ifd.maxy))),
 			}
 		}
 		for _, subIfd := range ifd.SubIFDs {
-			subIfd.ZoomLevel = ifd.getZoomLevel(subIfd.ImageWidth, subIfd.ImageLength)
+			subIfd.ZoomFactor = ifd.getZoomFactor(subIfd.ImageWidth, subIfd.ImageLength)
 			if subIfd.SubfileType == SubfileTypeReducedImage {
-				// Resize zMinMaxBlock
-				for i := uint64(len(zMinMaxBlock)); i <= subIfd.ZoomLevel; i++ {
-					zMinMaxBlock = append(zMinMaxBlock, [4]int32{math.MaxInt32, 0, math.MaxInt32})
+				currentLevel, ok := zFactorToLevel[subIfd.ZoomFactor]
+				if !ok {
+					currentLevel = len(zoomLevel)
+					zFactorToLevel[subIfd.ZoomFactor] = currentLevel
+					zoomLevel = append(zoomLevel, MinMaxBlock{subIfd.ZoomFactor, [4]int32{math.MaxInt32, 0, math.MaxInt32}})
 				}
-				currentOvr := zMinMaxBlock[subIfd.ZoomLevel]
-				zMinMaxBlock[subIfd.ZoomLevel] = [4]int32{
-					int32(math.Min(float64(currentOvr[0]), float64(subIfd.minx))),
-					int32(math.Max(float64(currentOvr[1]), float64(subIfd.maxx))),
-					int32(math.Min(float64(currentOvr[2]), float64(subIfd.miny))),
-					int32(math.Max(float64(currentOvr[3]), float64(subIfd.maxy))),
+				currentMM := zoomLevel[currentLevel].MinMax
+				zoomLevel[currentLevel].MinMax = [4]int32{
+					int32(math.Min(float64(currentMM[0]), float64(subIfd.minx))),
+					int32(math.Max(float64(currentMM[1]), float64(subIfd.maxx))),
+					int32(math.Min(float64(currentMM[2]), float64(subIfd.miny))),
+					int32(math.Max(float64(currentMM[3]), float64(subIfd.maxy))),
 				}
 			}
 		}
 	}
 
+	// Sort zoomLevel by Factor
+	sort.Slice(zoomLevel, func(i, j int) bool { return zoomLevel[i].Factor < zoomLevel[j].Factor })
+
+	// Extract zMinMaxBlock
+	zMinMaxBlock := make([][4]int32, len(zoomLevel))
+	cog.zoomFactorToLevel = map[float64]int{}
+	for i, z := range zoomLevel {
+		cog.zoomFactorToLevel[z.Factor] = i
+		zMinMaxBlock[i] = z.MinMax
+	}
+
 	var err error
-	cog.iterators, err = iterator.InitIterators(pattern, len(cog.ifds), nbBands, zMinMaxBlock)
+	cog.iterators, err = InitIterators(pattern, len(cog.ifds), nbPlanes, zMinMaxBlock)
 	if err != nil {
 		return err
 	}
@@ -556,8 +580,14 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool, pattern string) error {
 }
 
 /** Write multiCOG to a mucog
- * Parameters "pattern" defines how to interlace the [R]ecords (dataset), the [B]ands (planes), the [Z]ooms level (overview) and the [T]iles (geotiff blocks).
- * The four levels of interlacing must be prioritized in the following way L1>L2>L3>L4 where each L is in [R, B, Z, T]. This order should be understood as:
+ * Parameters "pattern" defines how to interlace the [I]mages (TopLevel IFD/dataset) the [P]lanes (bands), the [L]evel (zooms/overview/reduced image) and the [T]iles (geotiff blocks).
+ *
+ * Common patterns:
+ * MUCOGPattern         = "L=0>T>I>P;L=1:>I>T>P" // Full resolution tiles are temporally interlaced, overview tiles are geographically interlaced
+ * MUCOGTemporalPattern = "L>T>I>P"              // For each level, tiles are temporally interlaced
+ *
+ * Advanced patterns:
+ * The four levels of interlacing must be prioritized in the following way L1>L2>L3>L4 where each L is in [I, P, L, T]. This order should be understood as:
  * for each L1:
  *   for each L2:
  *     for each L3:
@@ -565,22 +595,24 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool, pattern string) error {
  *         addBlock(L1, L2, L3, L4)
  * In other words, all L4 for a given (L1, L2, L3) will be contiguous in memory.
  * For example:
- * - To optimize the access to geographical information of all the bands (such as in COG) : R>Z>T>B  => For a given record, zoom level and block, all the bands will be contiguous.
- * - To optimize the access to geographical information of one band at a time : B>R>Z>T => For a given band, record and zoom, all the blocks will be contiguous.
- * - To optimize the access to timeseries of all the bands (such as in MUCOG): Z>T>R>B => For a given zoom level and block, all the records will be contiguous.
+ * - To optimize the access to timeseries of all the planes (such as in MUCOG): L>T>I>P => For a given zoom level and tile, all the images will be contiguous.
+ * - To optimize the access to geographical information of all the planes (such as in COG) : I>L>T>P  => For a given image, zoom level and tile, all the planes will be contiguous.
+ * - To optimize the access to geographical information of one plane at a time : P>I>L>T => For a given plane, image and zoom level, all the tiles will be contiguous.
  *
  * Interlacing pattern can be specialized to only select a list or a range for each level (except Tile level).
- * - By values: L=0,2,3 will only select the value 0, 2 and 3 of the level L. For example B=0,2,3 to select the corresponding band level.
- * - By range: L=0:3 will only select the values from 0 to 3 (not included) of the level L. For example B=0:3 to select the three firsts bands.
- * First and last values of the range can be omitted to define 0 or last element of the level. e.g B=2: means all the bands from the second.
- * Z=0 is the full resolution, Z=1 is the overview with zoom factor 2, Z=2 is the zoom factor 4, and so on.
+ * - By values: L=0,2,3 will only select the value 0, 2 and 3 of the level L. For example P=0,2,3 to select the corresponding planes.
+ * - By range: L=0:3 will only select the values from 0 to 3 (not included) of the level L. For example P=0:3 to select the first three planes.
+ * First and last values of the range can be omitted to define 0 or last element of the level. e.g P=2: means all the planes from the second.
+ * L=0 is the full resolution, L=1 is the first overview (usually: zoom factor=2), L=2 is the second overiew (usually: zoom factor=4), and so on.
  *
  * To chain interlacing patterns, use ";" separator.
  *
  * For example:
- * - Optimize access to timeseries for full resolution (Z=0), but geographic for overviews (Z=1:). Z=0>T>R>B;Z=1:>R>T>B
- * - Same example, but the bands are separated: B>Z=0>T>R;B>Z=1:>R>T
- * - To optimize access to geographic information of the three first bands together, but timeseries of the others: Z>T>R>B=0:3;B=3:>Z>R>T
+ * - Optimize access to timeseries for full resolution (L=0), but geographic for overviews (L=1:). L=0>T>I>P;L=1:>I>T>P
+ * - Same example, but the planes are separated: P>L=0>T>I;P>L=1:>I>T
+ * - To optimize access to geographic information of the three first planes together, but timeseries of the others: L>T>I>P=0:3;P=3:>L>I>T
+ *
+ * There is no validation that the pattern includes all the tiles (the others will be lost, e.g. L=0>T>I>P removes all the overviews), neither that the pattern has duplicated tiles (unpredictable behavior: e.g. L>T>I>P=0;L>T>I>P=0:2 : P=0 is duplicated).
  */
 func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 	for _, mifd := range cog.ifds {
@@ -949,8 +981,8 @@ func (cog *MultiCOG) dataInterlacing() datas {
 	for _, topifd := range cog.ifds {
 		data := [][]*IFD{{topifd}}
 		for _, subifd := range topifd.SubIFDs {
-			z := subifd.ZoomLevel
-			for i := uint64(len(data)); i <= z; i++ {
+			z := cog.zoomFactorToLevel[subifd.ZoomFactor]
+			for i := len(data); i <= z; i++ {
 				data = append(data, []*IFD{})
 			}
 			data[z] = append(data[z], subifd)
@@ -969,7 +1001,7 @@ func (cog *MultiCOG) dataInterlacing() datas {
 
 type datas [][][]*IFD
 
-func (d datas) Tiles(iterators []*iterator.Iterators) chan tile {
+func (d datas) Tiles(iterators []*Iterators) chan tile {
 	ch := make(chan tile)
 	go func() {
 		defer close(ch)
@@ -979,9 +1011,9 @@ func (d datas) Tiles(iterators []*iterator.Iterators) chan tile {
 				for it[1].Init(indices); it[1].Next(); {
 					for it[2].Init(indices); it[2].Next(); {
 						for it[3].Init(indices); it[3].Next(); {
-							x, y := iterator.DecodePair(*indices[iterator.IDX_TILE])
-							p := uint64(*indices[iterator.IDX_BAND])
-							for _, ifd := range d[*indices[iterator.IDX_RECORD]][*indices[iterator.IDX_ZOOM]] {
+							x, y := DecodePair(*indices[IDX_TILE])
+							p := uint64(*indices[IDX_PLANE])
+							for _, ifd := range d[*indices[IDX_IMAGE]][*indices[IDX_LEVEL]] {
 								if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
 									ch <- tile{
 										ifd:   ifd,

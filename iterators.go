@@ -1,4 +1,4 @@
-package iterator
+package mucog
 
 import (
 	"fmt"
@@ -8,17 +8,17 @@ import (
 )
 
 const (
-	IDX_RECORD int = iota // Datasets
-	IDX_ZOOM              // Full + Overviews ie 0: Full, 1:N: Overviews
-	IDX_TILE              // Block/Chunk
-	IDX_BAND              // Layer
-	KEY_RECORD = "R"
-	KEY_ZOOM   = "Z"
-	KEY_TILE   = "T"
-	KEY_BAND   = "B"
+	IDX_IMAGE int = iota // TopLevel IFD/Dataset
+	IDX_LEVEL            // Full + Overviews ie 0: Full, 1:N: Overviews/Reduced image
+	IDX_TILE             // Block/Chunk
+	IDX_PLANE            // Bands
+	KEY_IMAGE = "I"
+	KEY_LEVEL = "L"
+	KEY_TILE  = "T"
+	KEY_PLANE = "P"
 )
 
-var Names = []string{"Record", "Zoom", "Tile", "Band"}
+var Names = []string{"Image", "Level", "Tile", "Plane"}
 
 // Iterator on integers with an Identifier
 // Usage:
@@ -36,10 +36,10 @@ type Iterator interface {
 	Next() bool
 }
 
-func InitIterators(pattern string, nbRecords, nbBands int, zoomMinMaxBlock [][4]int32) ([]*Iterators, error) {
+func InitIterators(pattern string, nbImages, nbPlanes int, levelMinMaxBlock [][4]int32) ([]*Iterators, error) {
 	var iterators []*Iterators
 	for _, itersS := range strings.Split(pattern, ";") {
-		iters, err := NewIteratorsFromString(itersS, nbRecords, nbBands, zoomMinMaxBlock)
+		iters, err := NewIteratorsFromString(itersS, nbImages, nbPlanes, levelMinMaxBlock)
 		if err != nil {
 			return nil, err
 		}
@@ -122,28 +122,28 @@ const (
 	MAX_Y
 )
 
-// TileIterator creates an Iterator on the tiles of an overview level. SetOvlMinMax must be called before any other function.
+// TileIterator creates an Iterator on the tiles of an overview level.
 type TileIterator struct {
 	id               int
 	curValue         int
 	maxX, minY, maxY int32
 	curX, curY       int32
-	zoomMinMaxBlock  [][4]int32
+	levelMinMaxBlock [][4]int32
 }
 
 // NewTileIterator creates an Iterator on the blocks of an overview level.
-func NewTileIterator(id int, zoomMinMaxBlock [][4]int32) Iterator {
+func NewTileIterator(id int, levelMinMaxBlock [][4]int32) Iterator {
 	return &TileIterator{
-		id:              id,
-		zoomMinMaxBlock: zoomMinMaxBlock,
+		id:               id,
+		levelMinMaxBlock: levelMinMaxBlock,
 	}
 }
 
 // Init returns a pointer on an encoded value of the block indices (see DecodePair to get x, y)
 func (it *TileIterator) Init(indices []*int) {
-	zoomIdx := *indices[IDX_ZOOM]
-	it.curX, it.maxX = it.zoomMinMaxBlock[zoomIdx][MIN_X], it.zoomMinMaxBlock[zoomIdx][MAX_X]
-	it.minY, it.maxY = it.zoomMinMaxBlock[zoomIdx][MIN_Y], it.zoomMinMaxBlock[zoomIdx][MAX_Y]
+	levelIdx := *indices[IDX_LEVEL]
+	it.curX, it.maxX = it.levelMinMaxBlock[levelIdx][MIN_X], it.levelMinMaxBlock[levelIdx][MAX_X]
+	it.minY, it.maxY = it.levelMinMaxBlock[levelIdx][MIN_Y], it.levelMinMaxBlock[levelIdx][MAX_Y]
 	it.curY = it.minY
 	indices[it.id] = &it.curValue
 }
@@ -179,7 +179,7 @@ func DecodePair(p int) (int32, int32) {
 
 type Iterators [4]Iterator
 
-func NewIteratorsFromString(s string, nbRecords, nbBands int, zoomMinMaxBlock [][4]int32) (*Iterators, error) {
+func NewIteratorsFromString(s string, nbImages, nbPlanes int, levelMinMaxBlock [][4]int32) (*Iterators, error) {
 	its := strings.Split(s, ">")
 	if len(its) != 4 {
 		return nil, fmt.Errorf("%s must have four level of iterations, got %d", s, len(its))
@@ -190,17 +190,17 @@ func NewIteratorsFromString(s string, nbRecords, nbBands int, zoomMinMaxBlock []
 		itSplit := strings.SplitN(it, "=", 2)
 		switch itSplit[0] {
 		case KEY_TILE:
-			res[i] = NewTileIterator(IDX_TILE, zoomMinMaxBlock)
+			res[i] = NewTileIterator(IDX_TILE, levelMinMaxBlock)
 
-		case KEY_BAND, KEY_RECORD, KEY_ZOOM:
+		case KEY_PLANE, KEY_IMAGE, KEY_LEVEL:
 			var idx, maxV int
 			switch itSplit[0] {
-			case KEY_BAND:
-				idx, maxV = IDX_BAND, nbBands
-			case KEY_RECORD:
-				idx, maxV = IDX_RECORD, nbRecords
-			case KEY_ZOOM:
-				idx, maxV = IDX_ZOOM, len(zoomMinMaxBlock)
+			case KEY_PLANE:
+				idx, maxV = IDX_PLANE, nbPlanes
+			case KEY_IMAGE:
+				idx, maxV = IDX_IMAGE, nbImages
+			case KEY_LEVEL:
+				idx, maxV = IDX_LEVEL, len(levelMinMaxBlock)
 			}
 			if len(itSplit) == 1 || strings.Contains(itSplit[1], ":") {
 				// Using range
@@ -243,7 +243,7 @@ func NewIteratorsFromString(s string, nbRecords, nbBands int, zoomMinMaxBlock []
 				res[i] = NewValuesIterator(idx, values)
 			}
 		default:
-			return nil, fmt.Errorf("unknown key %s: must be one of [%s, %s, %s, %s]", itSplit[0], KEY_BAND, KEY_RECORD, KEY_ZOOM, KEY_TILE)
+			return nil, fmt.Errorf("unknown key %s: must be one of [%s, %s, %s, %s]", itSplit[0], KEY_PLANE, KEY_IMAGE, KEY_LEVEL, KEY_TILE)
 		}
 	}
 	return &res, res.Check()
@@ -259,8 +259,8 @@ func (its Iterators) Check() error {
 		if defined[idx] {
 			return fmt.Errorf("Iterators.Check: %s (idx=%d) is defined twice", Names[idx], idx)
 		}
-		if idx == IDX_TILE && !defined[IDX_ZOOM] {
-			return fmt.Errorf("Iterators.Check: %s (idx=%d) cannot be defined before %s (idx=%d)", Names[IDX_TILE], IDX_TILE, Names[IDX_ZOOM], IDX_ZOOM)
+		if idx == IDX_TILE && !defined[IDX_LEVEL] {
+			return fmt.Errorf("Iterators.Check: %s (idx=%d) cannot be defined before %s (idx=%d)", Names[IDX_TILE], IDX_TILE, Names[IDX_LEVEL], IDX_LEVEL)
 		}
 		defined[idx] = true
 	}

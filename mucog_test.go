@@ -112,7 +112,7 @@ func checkMucog(f string) error {
 		return err
 	}
 
-	if bytes.Compare(data, subdir1) != 0 {
+	if !bytes.Equal(data, subdir1) {
 		return fmt.Errorf("subdir1 content mismatch")
 	}
 
@@ -121,7 +121,7 @@ func checkMucog(f string) error {
 		return err
 	}
 
-	if bytes.Compare(data, subdir2) != 0 {
+	if !bytes.Equal(data, subdir2) {
 		return fmt.Errorf("subdir2 content mismatch")
 	}
 
@@ -171,7 +171,7 @@ func TestMucog(t *testing.T) {
 	if err != nil {
 		t.Errorf("TestMucog.Create: %v", err)
 	}
-	err = multiCOG.Write(out, false, "Z=0>T>R>B;B>R>Z=1:>T")
+	err = multiCOG.Write(out, false, mucog.MUCOGPattern)
 	if err != nil {
 		t.Errorf("TestMucog.Write: %v", err)
 	}
