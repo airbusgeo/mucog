@@ -68,8 +68,6 @@ func worker(in <-chan jp2) error {
 	return nil
 }
 
-var kakamutex sync.Mutex
-
 func process(file string, copts creationOptions) error {
 
 	defer log.Printf("created %s", file+".tif")
@@ -162,8 +160,6 @@ func process(file string, copts creationOptions) error {
 				ifd.ModelTiePointTag = nil
 				ifd.ModelTransformationTag = nil
 				topifd.SubIFDs = append(topifd.SubIFDs, ifd)
-			} else {
-				topifd = ifd
 			}
 			break
 		}
@@ -228,7 +224,7 @@ func process(file string, copts creationOptions) error {
 
 	bigtiff := totalSize > int64(^uint32(0))
 
-	err = multicog.Write(outfile, bigtiff)
+	err = multicog.Write(outfile, bigtiff, mucog.MUCOGPattern)
 	if err != nil {
 		return fmt.Errorf("multicog.write %s: %w", outfile.Name(), err)
 	}
