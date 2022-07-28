@@ -3,6 +3,7 @@ package mucog_test
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 
 	"log"
 	"os"
@@ -17,13 +18,14 @@ import (
 )
 
 var (
-	subdir1 = []uint8{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3}
-	subdir2 = []uint8{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7}
+	subdir1 = []uint8{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}
+	subdir2 = []uint8{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6}
 )
 
-func generateData(fname string, vals [4]byte) error {
-	ds, err := godal.Create(godal.GTiff, fname, 1, godal.Byte, 128, 128, godal.CreationOption(
-		"TILED=YES", "BLOCKXSIZE=64", "BLOCKYSIZE=64",
+func generateData(fname string, vals [][]byte) error {
+	bs := 64
+	ds, err := godal.Create(godal.GTiff, fname, 1, godal.Byte, bs*len(vals), bs*len(vals[0]), godal.CreationOption(
+		"TILED=YES", fmt.Sprintf("BLOCKXSIZE=%d", bs), fmt.Sprintf("BLOCKYSIZE=%d", bs),
 	))
 	if err != nil {
 		return err
@@ -39,24 +41,17 @@ func generateData(fname string, vals [4]byte) error {
 		return err
 	}
 	sr.Close()
-	buf := make([]byte, 64*64)
-	fillbuf(buf, vals[0])
-	if err = ds.Write(0, 0, buf, 64, 64); err != nil {
-		return err
+	// Fill Data
+	buf := make([]byte, bs*bs)
+	for i, vs := range vals {
+		for j, v := range vs {
+			fillbuf(buf, v)
+			if err = ds.Write(bs*i, bs*j, buf, bs, bs); err != nil {
+				return err
+			}
+		}
 	}
-	fillbuf(buf, vals[1])
-	if err = ds.Write(64, 0, buf, 64, 64); err != nil {
-		return err
-	}
-	fillbuf(buf, vals[2])
-	if err = ds.Write(0, 64, buf, 64, 64); err != nil {
-		return err
-	}
-	fillbuf(buf, vals[3])
-	if err = ds.Write(64, 64, buf, 64, 64); err != nil {
-		return err
-	}
-	if err = ds.BuildOverviews(godal.Levels(2, 4, 8)); err != nil {
+	if err = ds.BuildOverviews(godal.Levels(2, 4, 8, 24)); err != nil { // 24 is for non-integer zoom factor
 		return err
 	}
 	if err = ds.Close(); err != nil {
@@ -94,6 +89,36 @@ func loadMucog(files []*os.File, multicog *mucog.MultiCOG) error {
 	return nil
 }
 
+// Get Offset
+func offsets(d *godal.Dataset) ([]int, error) {
+	// TopLevel
+	band := d.Bands()[0]
+	ifdOffset, err := strconv.Atoi(band.Metadata("IFD_OFFSET", godal.Domain("TIFF")))
+	if err != nil {
+		return nil, err
+	}
+	ifdOffsets := []int{ifdOffset}
+
+	// Overviews
+	for i, ovr := range band.Overviews() {
+		if i == 0 {
+			if ovr.Structure().SizeX > band.Structure().SizeX || ovr.Structure().SizeY > band.Structure().SizeY {
+				return nil, fmt.Errorf("first overview has larger dimension than main band")
+			}
+		} else {
+			prevOvr := band.Overviews()[i-1]
+			if ovr.Structure().SizeX > prevOvr.Structure().SizeX || ovr.Structure().SizeY > prevOvr.Structure().SizeY {
+				return nil, fmt.Errorf("overview of index %d has larger dimension than overview of index %d", i, i-1)
+			}
+		}
+		if ifdOffset, err = strconv.Atoi(ovr.Metadata("IFD_OFFSET", godal.Domain("TIFF"))); err != nil {
+			return nil, err
+		}
+		ifdOffsets = append(ifdOffsets, ifdOffset)
+	}
+	return ifdOffsets, nil
+}
+
 func checkMucog(f string) error {
 	d1, err := godal.Open("GTIFF_DIR:1:" + f)
 	if err != nil {
@@ -125,6 +150,56 @@ func checkMucog(f string) error {
 		return fmt.Errorf("subdir2 content mismatch")
 	}
 
+	// Overviews
+	ovrCount := len(d1.Bands()[0].Overviews())
+	if len(d1.Bands()[0].Overviews()) != ovrCount {
+		return fmt.Errorf("d1 and d2 do not have the same number of overviews")
+	}
+
+	// Offsets
+	offset1, err := offsets(d1)
+	if err != nil {
+		return err
+	}
+	offset2, err := offsets(d2)
+	if err != nil {
+		return err
+	}
+
+	if offset1[0] > offset2[0] {
+		return fmt.Errorf("d1 should be before d2")
+	}
+
+	for i := 0; i < ovrCount-1; i++ {
+		if offset1[i] > offset1[i+1] || offset2[i] > offset2[i+1] {
+			return fmt.Errorf("overview %d should be before overview %d", i, i+1)
+		}
+		if offset1[i] > offset2[i+1] {
+			return fmt.Errorf("overview %d dataset 1 should be before overview %d dataset 2", i, i+1)
+		}
+	}
+
+	offsets1, err := offsets(d1)
+	if err != nil {
+		return err
+	}
+	offsets2, err := offsets(d2)
+	if err != nil {
+		return err
+	}
+
+	if offsets1[0] > offsets2[0] {
+		return fmt.Errorf("d1 should be before d2")
+	}
+
+	for i := 0; i < ovrCount-1; i++ {
+		if offsets1[i] > offsets1[i+1] || offsets2[i] > offsets2[i+1] {
+			return fmt.Errorf("overview %d should be before overview %d", i, i+1)
+		}
+		if offsets1[i] > offsets2[i+1] {
+			return fmt.Errorf("overview %d dataset 1 should be before overview %d dataset 2", i, i+1)
+		}
+	}
 	return nil
 }
 
@@ -146,10 +221,10 @@ func TestMucog(t *testing.T) {
 		file2.Close()
 	}()
 
-	if err := generateData(filePath1, [4]byte{1, 2, 3, 4}); err != nil {
+	if err := generateData(filePath1, [][]byte{{1, 2}, {4, 5}}); err != nil {
 		t.Errorf("TestMucog.generateData: %v", err)
 	}
-	if err := generateData(filePath2, [4]byte{5, 6, 7, 8}); err != nil {
+	if err := generateData(filePath2, [][]byte{{5, 6, 3}, {7, 8, 6}}); err != nil {
 		t.Errorf("TestMucog.generateData: %v", err)
 	}
 
@@ -183,5 +258,4 @@ func TestMucog(t *testing.T) {
 	if err := checkMucog(resultFilePath); err != nil {
 		t.Errorf("TestMucog.checkMucog: %v", err)
 	}
-
 }
