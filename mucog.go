@@ -1015,13 +1015,15 @@ func (d datas) Tiles(iterators []*Iterators) chan tile {
 						for it[3].Init(indices); it[3].Next(); {
 							x, y := DecodePair(*indices[IDX_TILE])
 							p := uint64(*indices[IDX_PLANE])
-							for _, ifd := range d[*indices[IDX_IMAGE]][*indices[IDX_LEVEL]] {
-								if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
-									ch <- tile{
-										ifd:   ifd,
-										x:     uint64(x),
-										y:     uint64(y),
-										plane: p,
+							if *indices[IDX_LEVEL] < len(d[*indices[IDX_IMAGE]]) {
+								for _, ifd := range d[*indices[IDX_IMAGE]][*indices[IDX_LEVEL]] {
+									if uint64(x) >= ifd.minx && uint64(x) < ifd.maxx && uint64(y) >= ifd.miny && uint64(y) < ifd.maxy {
+										ch <- tile{
+											ifd:   ifd,
+											x:     uint64(x) - ifd.minx,
+											y:     uint64(y) - ifd.miny,
+											plane: p,
+										}
 									}
 								}
 							}
