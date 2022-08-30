@@ -22,7 +22,7 @@ var (
 	subdir2 = []uint8{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6}
 )
 
-func generateData(fname string, vals [][]byte) error {
+func generateData(fname string, vals [][]byte, offset [2]float64) error {
 	bs := 64
 	ds, err := godal.Create(godal.GTiff, fname, 1, godal.Byte, bs*len(vals), bs*len(vals[0]), godal.CreationOption(
 		"TILED=YES", fmt.Sprintf("BLOCKXSIZE=%d", bs), fmt.Sprintf("BLOCKYSIZE=%d", bs),
@@ -30,7 +30,7 @@ func generateData(fname string, vals [][]byte) error {
 	if err != nil {
 		return err
 	}
-	if err = ds.SetGeoTransform([6]float64{0, 0.001, 0, 0, 0, -0.001}); err != nil {
+	if err = ds.SetGeoTransform([6]float64{offset[0] * float64(bs), 1, 0, offset[1] * float64(bs), 0, -1}); err != nil {
 		return err
 	}
 	sr, err := godal.NewSpatialRefFromEPSG(4326)
@@ -221,10 +221,10 @@ func TestMucog(t *testing.T) {
 		file2.Close()
 	}()
 
-	if err := generateData(filePath1, [][]byte{{1, 2}, {4, 5}}); err != nil {
+	if err := generateData(filePath1, [][]byte{{1, 2}, {4, 5}}, [2]float64{1, 1}); err != nil {
 		t.Errorf("TestMucog.generateData: %v", err)
 	}
-	if err := generateData(filePath2, [][]byte{{5, 6, 3}, {7, 8, 6}}); err != nil {
+	if err := generateData(filePath2, [][]byte{{5, 6, 7, 8}, {7, 8, 9, 10}}, [2]float64{0, 0}); err != nil {
 		t.Errorf("TestMucog.generateData: %v", err)
 	}
 

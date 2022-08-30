@@ -371,25 +371,51 @@ const (
 )
 
 func (cog *MultiCOG) computeStructure(bigtiff bool) error {
-	minx, maxy := math.MaxFloat64, -math.MaxFloat64
+	// Compute geotransform
+	var err error
 	for i, ifd := range cog.ifds {
-		var err error
-		ifd.gt, err = ifd.geotransform()
-		if err != nil {
+		if ifd.gt, err = ifd.geotransform(); err != nil {
 			return fmt.Errorf("ifd %d geotransform: %w", i, err)
 		}
-		ox, oy := ifd.gt.Origin()
-		if ox < minx {
-			minx = ox
-		}
-		if oy > maxy {
-			maxy = oy
-		}
 	}
+
+	// Validation
 	sx, sy := cog.ifds[0].gt.Scale()
 	tsx, tsy := cog.ifds[0].TileWidth, cog.ifds[0].TileLength
+	toPix, err := cog.ifds[0].gt.Inverse()
+	if err != nil {
+		return err
+	}
 	if tsx != tsy {
 		return fmt.Errorf("non square tile size %dx%d", tsx, tsy)
+	}
+	for i, ifd := range cog.ifds {
+		isx, isy := ifd.gt.Scale()
+		if math.Abs(1-isx/sx) > 0.00000001 || math.Abs(1-isy/sy) > 0.00000001 {
+			return fmt.Errorf("ifd %d incompatible scales (x: %.16f/%.16f, y: %.16f/%.16f)", i, isx, sx, isy, sy)
+		}
+		if ifd.TileWidth != tsx || ifd.TileLength != tsy {
+			return fmt.Errorf("ifd %d incompatible tile size (sx: %d/%d, sy: %d/%d)", i,
+				ifd.TileWidth, tsx, ifd.TileLength, tsy)
+		}
+		if ifd.nplanes != cog.ifds[0].nplanes {
+			return fmt.Errorf("ifd %d incompatible number of planes (%d/%d)", i, ifd.nplanes, cog.ifds[0].nplanes)
+		}
+	}
+
+	// Get origin
+	ox, oy := cog.ifds[0].gt.Origin()
+	for _, ifd := range cog.ifds {
+		nox, noy := ifd.gt.Origin()
+		x, y := toPix.Transform(nox, noy)
+		if x < 0 {
+			ox = nox
+			toPix, _ = geotransform{ox, sx, 0, oy, 0, sy}.Inverse()
+		}
+		if y < 0 {
+			oy = noy
+			toPix, _ = geotransform{ox, sx, 0, oy, 0, sy}.Inverse()
+		}
 	}
 	/*
 		if math.Abs(math.Abs(sx)-math.Abs(sy)) > 0.0000000001 {
@@ -402,23 +428,8 @@ func (cog *MultiCOG) computeStructure(bigtiff bool) error {
 		ifd.ntilesx = (ifd.ImageWidth + uint64(ifd.TileWidth) - 1) / uint64(ifd.TileWidth)
 		ifd.ntilesy = (ifd.ImageLength + uint64(ifd.TileLength) - 1) / uint64(ifd.TileLength)
 
-		isx, isy := ifd.gt.Scale()
-		xScaleDiff := math.Abs(1 - isx/sx)
-		yScaleDiff := math.Abs(1 - isy/sy)
-		if xScaleDiff > 0.00000001 || yScaleDiff > 0.00000001 {
-			return fmt.Errorf("ifd %d incompatible scales (x: %.16f/%.16f, y: %.16f/%.16f)", i, isx, sx, isy, sy)
-		}
-		if ifd.TileWidth != tsx || ifd.TileLength != tsy {
-			return fmt.Errorf("ifd %d incompatible tile size (sx: %d/%d, sy: %d/%d)", i,
-				ifd.TileWidth, tsx, ifd.TileLength, tsy)
-		}
-		if ifd.nplanes != cog.ifds[0].nplanes {
-			return fmt.Errorf("ifd %d incompatible number of planes (%d/%d)", i, ifd.nplanes, cog.ifds[0].nplanes)
-		}
-		iox, ioy := ifd.gt.Origin()
-
-		//pixel offset from origin of first ifd
-		noffx, noffy := (iox-minx)/sx, (maxy-ioy)/sy
+		//pixel offset from origin of mucog
+		noffx, noffy := toPix.Transform(ifd.gt.Origin())
 
 		//check we have no more than .1 pixel grid mis-alignment
 		npx, npy := math.Mod(noffx, float64(tsx)), math.Mod(noffy, float64(tsy))
@@ -435,7 +446,9 @@ func (cog *MultiCOG) computeStructure(bigtiff bool) error {
 			sifd.ntags, sifd.tagsSize, sifd.strileSize, sifd.nplanes = sifd.structure(bigtiff)
 			sifd.ntilesx = (sifd.ImageWidth + uint64(sifd.TileWidth) - 1) / uint64(sifd.TileWidth)
 			sifd.ntilesy = (sifd.ImageLength + uint64(sifd.TileLength) - 1) / uint64(sifd.TileLength)
-			sifd.minx, sifd.miny, sifd.maxx, sifd.maxy = 0, 0, sifd.ntilesx, sifd.ntilesy
+			sifd.minx = (ifd.minx * uint64(sifd.ImageWidth)) / uint64(ifd.ImageWidth)
+			sifd.miny = (ifd.miny * uint64(sifd.ImageLength)) / uint64(ifd.ImageLength)
+			sifd.maxx, sifd.maxy = sifd.minx+sifd.ntilesx, sifd.miny+sifd.ntilesy
 			sifd.zoomFactor = math.Max(float64(ifd.ImageWidth)/float64(sifd.ImageWidth), float64(ifd.ImageLength)/float64(sifd.ImageLength))
 		}
 
