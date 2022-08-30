@@ -615,6 +615,9 @@ func (cog *MultiCOG) computeImageryOffsets(bigtiff bool, pattern string) error {
  * There is no validation that the pattern includes all the tiles (the others will be lost, e.g. L=0>T>I>P removes all the overviews), neither that the pattern has duplicated tiles (unpredictable behavior: e.g. L>T>I>P=0;L>T>I>P=0:2 : P=0 is duplicated).
  */
 func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
+	if len(cog.ifds) == 0 {
+		return fmt.Errorf("empty ifds")
+	}
 	for _, mifd := range cog.ifds {
 		if len(mifd.SubIFDOffsets) != len(mifd.SubIFDs) {
 			mifd.SubIFDOffsets = make([]uint64, len(mifd.SubIFDs))
