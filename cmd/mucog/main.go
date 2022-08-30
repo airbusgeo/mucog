@@ -28,6 +28,7 @@ func main() {
 func run(ctx context.Context) error {
 	outfile := flag.String("output", "out.tif", "destination file")
 	sbigtiff := flag.String("bigtiff", "auto", "force bigtiff (yes|no|auto)")
+	pattern := flag.String("pattern", "Z=0>T>R>B;B>R>Z=1:>T", "pattern to use for data interlacing (default: \"Z=0>T>R>B;B>R>Z=1:>T\")")
 	flag.Parse()
 
 	args := flag.Args()
@@ -86,7 +87,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("create %s: %w", *outfile, err)
 	}
 
-	err = multicog.Write(out, bigtiff)
+	err = multicog.Write(out, bigtiff, *pattern)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -95,6 +96,4 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("close %s: %w", *outfile, err)
 	}
 	return nil
-
-	//log.Printf("%+v\n", cogs)
 }
