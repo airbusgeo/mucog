@@ -116,7 +116,8 @@ type IFD struct {
 	NoData string `tiff:"field,tag=42113"`
 
 	SubIFDs    []*IFD
-	ZoomFactor float64
+	zoomFactor float64
+	ZoomLevel  int
 
 	ntags                  uint64
 	tagsSize               uint64
@@ -304,12 +305,6 @@ func (ifd *IFD) structure(bigtiff bool) (tagCount, ifdSize, strileSize, planeCou
 	return
 }
 
-func (i *IFD) getZoomFactor(ovrResX, ovrResY uint64) float64 {
-	xFactor := i.ImageWidth / ovrResX
-	yFactor := i.ImageLength / ovrResY
-	return math.Max(float64(xFactor), float64(yFactor))
-}
-
 type TagData struct {
 	bytes.Buffer
 	Offset uint64
@@ -320,10 +315,9 @@ func (t *TagData) NextOffset() uint64 {
 }
 
 type MultiCOG struct {
-	enc               binary.ByteOrder
-	ifds              []*IFD
-	iterators         []*Iterators
-	zoomFactorToLevel map[float64]int
+	enc       binary.ByteOrder
+	ifds      []*IFD
+	iterators []*Iterators
 }
 
 func New() *MultiCOG {
@@ -442,25 +436,35 @@ func (cog *MultiCOG) computeStructure(bigtiff bool) error {
 			sifd.ntilesx = (sifd.ImageWidth + uint64(sifd.TileWidth) - 1) / uint64(sifd.TileWidth)
 			sifd.ntilesy = (sifd.ImageLength + uint64(sifd.TileLength) - 1) / uint64(sifd.TileLength)
 			sifd.minx, sifd.miny, sifd.maxx, sifd.maxy = 0, 0, sifd.ntilesx, sifd.ntilesy
+			sifd.zoomFactor = math.Max(float64(ifd.ImageWidth)/float64(sifd.ImageWidth), float64(ifd.ImageLength)/float64(sifd.ImageLength))
+		}
+
+		// Order SubIFDs by Zoom Factor & filetype
+		sort.Slice(ifd.SubIFDs, func(i, j int) bool {
+			return ifd.SubIFDs[i].zoomFactor < ifd.SubIFDs[j].zoomFactor ||
+				(ifd.SubIFDs[i].zoomFactor == ifd.SubIFDs[j].zoomFactor && ifd.SubIFDs[i].SubfileType < ifd.SubIFDs[j].SubfileType)
+		})
+		// Set ZoomLevel
+		zl, zf := 0, 1.0
+		for _, sifd := range ifd.SubIFDs {
+			if sifd.zoomFactor != zf {
+				zf = sifd.zoomFactor
+				zl++
+			}
+			sifd.ZoomLevel = zl
 		}
 	}
 	return nil
 }
 
 func (cog *MultiCOG) computeIterator(pattern string) error {
-	type MinMaxBlock struct {
-		Factor float64
-		MinMax [4]int32
-	}
-
 	var nbPlanes int
-	zoomLevel := []MinMaxBlock{{0, [4]int32{math.MaxInt32, 0, math.MaxInt32}}}
-	zFactorToLevel := map[float64]int{}
+	zMinMaxBlock := [][4]int32{{math.MaxInt32, 0, math.MaxInt32}}
 	for _, ifd := range cog.ifds {
 		if ifd.SubfileType == SubfileTypeImage {
 			nbPlanes = int(math.Max(float64(ifd.nplanes), float64(nbPlanes)))
-			currentMM := zoomLevel[0].MinMax
-			zoomLevel[0].MinMax = [4]int32{
+			currentMM := zMinMaxBlock[0]
+			zMinMaxBlock[0] = [4]int32{
 				int32(math.Min(float64(currentMM[0]), float64(ifd.minx))),
 				int32(math.Max(float64(currentMM[1]), float64(ifd.maxx))),
 				int32(math.Min(float64(currentMM[2]), float64(ifd.miny))),
@@ -468,34 +472,20 @@ func (cog *MultiCOG) computeIterator(pattern string) error {
 			}
 		}
 		for _, subIfd := range ifd.SubIFDs {
-			subIfd.ZoomFactor = ifd.getZoomFactor(subIfd.ImageWidth, subIfd.ImageLength)
 			if subIfd.SubfileType == SubfileTypeReducedImage {
-				currentLevel, ok := zFactorToLevel[subIfd.ZoomFactor]
-				if !ok {
-					currentLevel = len(zoomLevel)
-					zFactorToLevel[subIfd.ZoomFactor] = currentLevel
-					zoomLevel = append(zoomLevel, MinMaxBlock{subIfd.ZoomFactor, [4]int32{math.MaxInt32, 0, math.MaxInt32}})
+				// Resize zMinMaxBlock
+				for i := len(zMinMaxBlock); i <= subIfd.ZoomLevel; i++ {
+					zMinMaxBlock = append(zMinMaxBlock, [4]int32{math.MaxInt32, 0, math.MaxInt32})
 				}
-				currentMM := zoomLevel[currentLevel].MinMax
-				zoomLevel[currentLevel].MinMax = [4]int32{
-					int32(math.Min(float64(currentMM[0]), float64(subIfd.minx))),
-					int32(math.Max(float64(currentMM[1]), float64(subIfd.maxx))),
-					int32(math.Min(float64(currentMM[2]), float64(subIfd.miny))),
-					int32(math.Max(float64(currentMM[3]), float64(subIfd.maxy))),
+				currentOvr := zMinMaxBlock[subIfd.ZoomLevel]
+				zMinMaxBlock[subIfd.ZoomLevel] = [4]int32{
+					int32(math.Min(float64(currentOvr[0]), float64(subIfd.minx))),
+					int32(math.Max(float64(currentOvr[1]), float64(subIfd.maxx))),
+					int32(math.Min(float64(currentOvr[2]), float64(subIfd.miny))),
+					int32(math.Max(float64(currentOvr[3]), float64(subIfd.maxy))),
 				}
 			}
 		}
-	}
-
-	// Sort zoomLevel by Factor
-	sort.Slice(zoomLevel, func(i, j int) bool { return zoomLevel[i].Factor < zoomLevel[j].Factor })
-
-	// Extract zMinMaxBlock
-	zMinMaxBlock := make([][4]int32, len(zoomLevel))
-	cog.zoomFactorToLevel = map[float64]int{}
-	for i, z := range zoomLevel {
-		cog.zoomFactorToLevel[z.Factor] = i
-		zMinMaxBlock[i] = z.MinMax
 	}
 
 	var err error
@@ -618,9 +608,13 @@ func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 	if len(cog.ifds) == 0 {
 		return fmt.Errorf("empty ifds")
 	}
+	maxSubIFDNb := 0
 	for _, mifd := range cog.ifds {
 		if len(mifd.SubIFDOffsets) != len(mifd.SubIFDs) {
 			mifd.SubIFDOffsets = make([]uint64, len(mifd.SubIFDs))
+		}
+		if maxSubIFDNb < len(mifd.SubIFDs) {
+			maxSubIFDNb = len(mifd.SubIFDs)
 		}
 	}
 
@@ -638,9 +632,13 @@ func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 
 	for _, mifd := range cog.ifds {
 		strileData.Offset += mifd.tagsSize
-		for si, sc := range mifd.SubIFDs {
-			mifd.SubIFDOffsets[si] = strileData.Offset
-			strileData.Offset += sc.tagsSize
+	}
+	for s := 0; s < maxSubIFDNb; s++ {
+		for _, mifd := range cog.ifds {
+			if s < len(mifd.SubIFDs) {
+				mifd.SubIFDOffsets[s] = strileData.Offset
+				strileData.Offset += mifd.SubIFDs[s].tagsSize
+			}
 		}
 	}
 
@@ -650,15 +648,13 @@ func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 	if !bigtiff {
 		off = 8
 	}
+	// Add full resolution IFDs
 	for i, mifd := range cog.ifds {
 		//compute offset of next top level ifd
-		//it's the current offset, plus length of current ifd + subifds
+		//it's the current offset, plus length of current ifd
 		next := uint64(0)
 		if i != len(cog.ifds)-1 {
 			next = off + mifd.tagsSize
-			for _, sifd := range mifd.SubIFDs {
-				next += sifd.tagsSize
-			}
 		}
 		//log.Printf("%d offsets: %v", i, mifd.NewTileOffsets)
 		err := cog.writeIFD(out, bigtiff, mifd, off, strileData, next)
@@ -666,13 +662,17 @@ func (cog *MultiCOG) Write(out io.Writer, bigtiff bool, pattern string) error {
 			return fmt.Errorf("write ifd %d: %w", i, err)
 		}
 		off += mifd.tagsSize
-		for s, sifd := range mifd.SubIFDs {
-			//log.Printf("%d/%d offsets: %v", i, s, sifd.NewTileOffsets)
-			err := cog.writeIFD(out, bigtiff, sifd, off, strileData, 0)
-			if err != nil {
-				return fmt.Errorf("write subifd %d/%d:%w", i, s, err)
+	}
+	// Add sub IFDs
+	for s := 0; s < maxSubIFDNb; s++ {
+		for i, mifd := range cog.ifds {
+			if s < len(mifd.SubIFDs) {
+				err := cog.writeIFD(out, bigtiff, mifd.SubIFDs[s], off, strileData, 0)
+				if err != nil {
+					return fmt.Errorf("write subifd %d/%d:%w", i, s, err)
+				}
+				off += mifd.SubIFDs[s].tagsSize
 			}
-			off += sifd.tagsSize
 		}
 	}
 
@@ -979,16 +979,17 @@ type tile struct {
 	plane uint64
 }
 
+type datas [][][]*IFD
+
 func (cog *MultiCOG) dataInterlacing() datas {
 	var result datas
 	for _, topifd := range cog.ifds {
 		data := [][]*IFD{{topifd}}
 		for _, subifd := range topifd.SubIFDs {
-			z := cog.zoomFactorToLevel[subifd.ZoomFactor]
-			for i := len(data); i <= z; i++ {
+			for i := len(data); i <= subifd.ZoomLevel; i++ {
 				data = append(data, []*IFD{})
 			}
-			data[z] = append(data[z], subifd)
+			data[subifd.ZoomLevel] = append(data[subifd.ZoomLevel], subifd)
 		}
 		// Sort each zoom level
 		for i := range data {
@@ -1001,8 +1002,6 @@ func (cog *MultiCOG) dataInterlacing() datas {
 
 	return result
 }
-
-type datas [][][]*IFD
 
 func (d datas) Tiles(iterators []*Iterators) chan tile {
 	ch := make(chan tile)
